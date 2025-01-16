@@ -5,7 +5,7 @@
     <groupId>org.springframework</groupId>
     <artifactId>jb-hello-world-maven</artifactId>
     <packaging>jar</packaging>
-    <version>0.2.9</version>
+    <version>0.2.12</version>
 
     <!-- tag::joda[] -->
      <properties>
