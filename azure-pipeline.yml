@@ -1,0 +1,122 @@
+trigger:
+  branches:
+    include:
+      - aliboran  # Only run the pipeline for the 'aliboran' branch
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  # Step 1: Install Git (if not already available)
+  - task: Bash@3
+    displayName: "Ensure Git is Installed"
+    inputs:
+      targetType: 'inline'
+      script: |
+        git --version || sudo apt-get install -y git
+
+  # Step 2: Fetch the repository and checkout the branch
+  - task: Bash@3
+    displayName: "Fetch Repository and Checkout 'aliboran'"
+    inputs:
+      targetType: 'inline'
+      script: |
+        git fetch origin
+        git checkout aliboran
+
+  # Step 3: Load configuration variables
+  - task: Bash@3
+    displayName: "Load Configuration"
+    inputs:
+      targetType: 'inline'
+      script: |
+        if [ -f .prepare-commit-msg-config ]; then
+          source .prepare-commit-msg-config
+          echo "Loaded configuration:"
+          echo "REMOTE_MAIN_BRANCH_NAME=$REMOTE_MAIN_BRANCH_NAME"
+          echo "DEFAULT_INCREMENT=$DEFAULT_INCREMENT"
+        else
+          echo "Configuration file '.prepare-commit-msg-config' not found!"
+          exit 1
+        fi
+
+  # Step 4: Execute the logic from the hook script
+  - task: Bash@3
+    displayName: "Run Version Increment Script"
+    inputs:
+      targetType: 'inline'
+      script: |
+        # Path to pom.xml
+        POM_FILE="pom.xml"
+
+        # Fetch latest changes from remote
+        echo "Fetching latest changes from remote repository..."
+        git fetch origin > /dev/null 2>&1
+
+        # Get the version from the remote main branch
+        REMOTE_VERSION=$(git show $REMOTE_MAIN_BRANCH_NAME:$POM_FILE 2>/dev/null | grep -oPm1 "(?<=<version>)(.*)(?=</version>)")
+        if [ -z "$REMOTE_VERSION" ]; then
+          echo "Failed to retrieve version from $REMOTE_MAIN_BRANCH_NAME. Exiting."
+          exit 1
+        fi
+
+        # Get the local version
+        LOCAL_VERSION=$(grep -oPm1 "(?<=<version>)(.*)(?=</version>)" "$POM_FILE")
+        if [ -z "$LOCAL_VERSION" ]; then
+          echo "Failed to retrieve local version from pom.xml. Exiting."
+          exit 1
+        fi
+
+        echo "Remote Version: $REMOTE_VERSION"
+        echo "Local Version: $LOCAL_VERSION"
+
+        # Compare versions and determine the highest version
+        IFS='.' read -r -a remote_parts <<< "$REMOTE_VERSION"
+        IFS='.' read -r -a local_parts <<< "$LOCAL_VERSION"
+
+        for i in 0 1 2; do
+          if (( ${remote_parts[i]} > ${local_parts[i]} )); then
+            HIGHEST_VERSION=$REMOTE_VERSION
+            break
+          elif (( ${remote_parts[i]} < ${local_parts[i]} )); then
+            HIGHEST_VERSION=$LOCAL_VERSION
+            break
+          fi
+        done
+        HIGHEST_VERSION=${HIGHEST_VERSION:-$REMOTE_VERSION}
+
+        # Increment the version based on DEFAULT_INCREMENT
+        IFS='.' read -r -a version_parts <<< "$HIGHEST_VERSION"
+        MAJOR=${version_parts[0]}
+        MINOR=${version_parts[1]}
+        PATCH=${version_parts[2]}
+
+        case "$DEFAULT_INCREMENT" in
+          major)
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            ;;
+          minor)
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            ;;
+          patch)
+            PATCH=$((PATCH + 1))
+            ;;
+          *)
+            echo "Invalid DEFAULT_INCREMENT value. Use 'major', 'minor', or 'patch'. Exiting."
+            exit 1
+            ;;
+        esac
+
+        # Build the new version
+        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+        echo "New Version: $NEW_VERSION"
+
+        # Update the pom.xml
+        sed -i "s|<version>$LOCAL_VERSION</version>|<version>$NEW_VERSION</version>|" "$POM_FILE"
+
+        # Add and commit the changes
+        git add "$POM_FILE"
+        git commit -m "Version incremented to $NEW_VERSION"
